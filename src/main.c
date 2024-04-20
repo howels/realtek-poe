@@ -46,6 +46,7 @@ struct cmd {
 };
 
 struct poe_ctx {
+	struct config config;
 	struct ubus_auto_conn conn;
 	struct uloop_timeout state_timeout;
 };
@@ -56,11 +57,7 @@ static unsigned char cmd_seq;
 static struct state state;
 static struct blob_buf b;
 
-static struct config config = {
-	.budget = 65,
-	.budget_guard = 7,
-	.pse_id_set_budget_mask = 0x01,
-};
+static void config_apply_quirks(struct config *config);
 
 static inline struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
 {
@@ -119,29 +116,31 @@ static void load_global_config(struct config *cfg, struct uci_context *uci,
 		cfg->budget_guard = strtof(guardband, NULL);
 }
 
-static void
-config_load(int init)
+static void config_load(struct config *cfg, int init)
 {
 	struct uci_context *uci = uci_alloc_context();
-        struct uci_package *package = NULL;
+	struct uci_package *package = NULL;
 
-	memset(config.ports, 0, sizeof(config.ports));
+	memset(cfg->ports, 0, sizeof(cfg->ports));
 
 	if (!uci_load(uci, "poe", &package)) {
 		struct uci_element *e;
 
-		if (init)
+		if (init) {
 			uci_foreach_element(&package->sections, e) {
 				struct uci_section *s = uci_to_section(e);
 
 				if (!strcmp(s->type, "global"))
-					load_global_config(&config, uci, s);
+					load_global_config(cfg, uci, s);
 			}
+
+			config_apply_quirks(cfg);
+		}
 		uci_foreach_element(&package->sections, e) {
 			struct uci_section *s = uci_to_section(e);
 
 			if (!strcmp(s->type, "port"))
-				load_port_config(&config, uci, s);
+				load_port_config(cfg, uci, s);
 		}
 	}
 
@@ -719,25 +718,24 @@ static int poet_setup(const struct port_config *ports, size_t num_ports)
 	return 0;
 }
 
-static int
-poe_port_setup(void)
+static int poe_port_setup(const struct config *cfg)
 {
 	size_t i;
 
 	poe_cmd_port_disconnect_type(PORT_ID_ALL, 2);
 	poe_cmd_port_detection_type(PORT_ID_ALL, 3);
 
-	for (i = 0; i < config.port_count; i++) {
-		if (!config.ports[i].enable || !config.ports[i].power_budget)
+	for (i = 0; i < cfg->port_count; i++) {
+		if (!cfg->ports[i].enable || !cfg->ports[i].power_budget)
 			continue;
 
-		poe_cmd_port_power_budget(i, config.ports[i].power_budget);
+		poe_cmd_port_power_budget(i, cfg->ports[i].power_budget);
 	}
 
-	poet_setup(config.ports, config.port_count);
+	poet_setup(cfg->ports, cfg->port_count);
 
-	for (i = 0; i < config.port_count; i++)
-		poe_cmd_port_enable(i, !!config.ports[i].enable);
+	for (i = 0; i < cfg->port_count; i++)
+		poe_cmd_port_enable(i, !!cfg->ports[i].enable);
 
 	return 0;
 }
@@ -755,15 +753,14 @@ static void poe_set_power_budget(const struct config *config)
 	}
 }
 
-static int
-poe_initial_setup(void)
+static int poe_initial_setup(const struct config *cfg)
 {
 	poe_cmd_status();
 	poe_cmd_power_mgmt_mode(2);
 	poe_cmd_port_mapping_enable(false);
-	poe_set_power_budget(&config);
+	poe_set_power_budget(cfg);
 
-	poe_port_setup();
+	poe_port_setup(cfg);
 
 	return 0;
 }
@@ -771,14 +768,16 @@ poe_initial_setup(void)
 static void
 state_timeout_cb(struct uloop_timeout *t)
 {
+	struct poe_ctx *poe = container_of(t, struct poe_ctx, state_timeout);
+	const struct config *cfg = &poe->config;
 	size_t i;
 
 	poe_cmd_power_stats();
 
-	for (i = 0; i < config.port_count; i += 4)
+	for (i = 0; i < cfg->port_count; i += 4)
 		poe_cmd_4_port_status(i, i + 1, i + 2, i + 3);
 
-	for (i = 0; i < config.port_count; i++) {
+	for (i = 0; i < cfg->port_count; i++) {
 		poe_cmd_port_ext_config(i);
 		poe_cmd_port_power_stats(i);
 	}
@@ -791,6 +790,8 @@ ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
 		 struct ubus_request_data *req, const char *method,
 		 struct blob_attr *msg)
 {
+	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
+	const struct config *cfg = &poe->config;
 	char tmp[16];
 	size_t i;
 	void *c;
@@ -802,19 +803,19 @@ ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	blobmsg_add_string(&b, "firmware", tmp);
 	if (state.sys_mcu)
 		blobmsg_add_string(&b, "mcu", state.sys_mcu);
-	blobmsg_add_double(&b, "budget", config.budget);
+	blobmsg_add_double(&b, "budget", cfg->budget);
 	blobmsg_add_double(&b, "consumption", state.power_consumption);
 
 	c = blobmsg_open_table(&b, "ports");
-	for (i = 0; i < config.port_count; i++) {
+	for (i = 0; i < cfg->port_count; i++) {
 		void *p;
 
-		if (!config.ports[i].valid)
+		if (!cfg->ports[i].valid)
 			continue;
 
-		p = blobmsg_open_table(&b, config.ports[i].name);
+		p = blobmsg_open_table(&b, cfg->ports[i].name);
 
-		blobmsg_add_u32(&b, "priority", config.ports[i].priority);
+		blobmsg_add_u32(&b, "priority", cfg->ports[i].priority);
 
 		if (state.ports[i].poe_mode)
 			blobmsg_add_string(&b, "mode", state.ports[i].poe_mode);
@@ -877,8 +878,10 @@ ubus_poe_reload_cb(struct ubus_context *ctx, struct ubus_object *obj,
 		   struct ubus_request_data *req, const char *method,
 		   struct blob_attr *msg)
 {
-	config_load(0);
-	poe_port_setup();
+	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
+
+	config_load(&poe->config, 0);
+	poe_port_setup(&poe->config);
 
 	return UBUS_STATUS_OK;
 }
@@ -893,6 +896,8 @@ static int ubus_poe_manage_cb(struct ubus_context *ctx, struct ubus_object *obj,
 			      struct blob_attr *msg)
 {
 	struct blob_attr *tb[ARRAY_SIZE(ubus_poe_manage_policy)];
+	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
+	const struct config *cfg = &poe->config;
 	const struct port_config *port;
 	const char *port_name;
 	size_t i;
@@ -904,8 +909,8 @@ static int ubus_poe_manage_cb(struct ubus_context *ctx, struct ubus_object *obj,
 		return UBUS_STATUS_INVALID_ARGUMENT;
 
 	port_name = blobmsg_get_string(tb[0]);
-	for (i = 0; i < config.port_count; i++) {
-		port = &config.ports[i];
+	for (i = 0; i < cfg->port_count; i++) {
+		port = &cfg->ports[i];
 		if (port->enable && !strcmp(port_name, port->name))
 			return poe_cmd_port_enable(i, blobmsg_get_bool(tb[1]));
 	}
@@ -947,6 +952,11 @@ main(int argc, char ** argv)
 	struct poe_ctx poe = {
 		.state_timeout.cb = state_timeout_cb,
 		.conn.cb = ubus_connect_handler,
+		.config = {
+			.budget = 65,
+			.budget_guard = 7,
+			.pse_id_set_budget_mask = 0x01,
+		},
 	};
 
 	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "realtek-poe");
@@ -960,8 +970,7 @@ main(int argc, char ** argv)
 		}
 	}
 
-	config_load(1);
-	config_apply_quirks(&config);
+	config_load(&poe.config, 1);
 
 	uloop_init();
 	ubus_auto_connect(&poe.conn);
@@ -970,7 +979,7 @@ main(int argc, char ** argv)
 		return -1;
 
 
-	poe_initial_setup();
+	poe_initial_setup(&poe.config);
 	uloop_timeout_set(&poe.state_timeout, 1000);
 	uloop_run();
 	uloop_done();
