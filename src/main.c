@@ -20,25 +20,17 @@
 #include <uci.h>
 #include <uci_blob.h>
 
-typedef int (*poe_reply_handler)(unsigned char *reply);
+typedef int (*poe_reply_handler)(struct mcu_state *mcu, uint8_t *reply);
 
 /* Careful with this; Only works for set_detection/disconnect_type commands. */
 #define PORT_ID_ALL	0x7f
 #define MAX_RETRIES	5
 
 struct mcu {
-	const char *sys_mode;
-	unsigned char sys_version;
-	const char *sys_mcu;
-	const char *sys_status;
-	unsigned char sys_ext_version;
-	float power_consumption;
-	unsigned int num_detected_ports;
-
-	struct port_state ports[MAX_PORT];
 	struct uloop_timeout error_timeout;
 	struct list_head pending_cmds;
 	struct ustream_fd stream;
+	struct mcu_state state;
 	uint8_t cmd_seq;
 };
 
@@ -54,7 +46,7 @@ struct poe_ctx {
 	struct uloop_timeout state_timeout;
 };
 
-static struct mcu state;
+static struct mcu main_mcu;
 static struct blob_buf b;
 
 static void config_apply_quirks(struct config *config);
@@ -239,7 +231,7 @@ static int mcu_queue_cmd(struct mcu *mcu, uint8_t *cmd_buf, size_t len)
 
 static int poe_cmd_queue(uint8_t *cmd, int len)
 {
-	return mcu_queue_cmd(&state, cmd, len);
+	return mcu_queue_cmd(&main_mcu, cmd, len);
 }
 
 static int poet_cmd_4_port(uint8_t cmd_id, uint8_t port[4], uint8_t data[4])
@@ -386,8 +378,7 @@ poe_cmd_status(void)
 	return poe_cmd_queue(cmd, sizeof(cmd));
 }
 
-static int
-poe_reply_status(unsigned char *reply)
+static int poe_reply_status(struct mcu_state *state, uint8_t *reply)
 {
 	const char *mode[] = {
 		"Semi-auto I2C",
@@ -395,7 +386,7 @@ poe_reply_status(unsigned char *reply)
 		"Auto I2C",
 		"Auto UART"
 	};
-	const char *mcu[] = {
+	const char *mcu_names[] = {
 		"ST Micro ST32F100 Microcontroller",
 		"Nuvoton M05xx LAN Microcontroller",
 		"ST Micro STF030C8 Microcontroller",
@@ -413,12 +404,12 @@ poe_reply_status(unsigned char *reply)
 		"Global Disable Pin is asserted:System reseted:Configuration Dirty"
 	};
 
-	state.sys_mode = GET_STR(reply[2], mode);
-	state.num_detected_ports = reply[3];
-	state.sys_version = reply[7];
-	state.sys_mcu = GET_STR(reply[8], mcu);
-	state.sys_status = GET_STR(reply[9], status);
-	state.sys_ext_version = reply[10];
+	state->sys_mode = GET_STR(reply[2], mode);
+	state->num_detected_ports = reply[3];
+	state->sys_version = reply[7];
+	state->sys_mcu = GET_STR(reply[8], mcu_names);
+	state->sys_status = GET_STR(reply[9], status);
+	state->sys_ext_version = reply[10];
 
 	return 0;
 }
@@ -432,10 +423,9 @@ poe_cmd_power_stats(void)
 	return poe_cmd_queue(cmd, sizeof(cmd));
 }
 
-static int
-poe_reply_power_stats(unsigned char *reply)
+static int poe_reply_power_stats(struct mcu_state *state, uint8_t *reply)
 {
-	state.power_consumption = read16_be(reply + 2) * 0.1;
+	state->power_consumption = read16_be(reply + 2) * 0.1;
 
 	return 0;
 }
@@ -449,8 +439,7 @@ poe_cmd_port_ext_config(unsigned char port)
 	return poe_cmd_queue(cmd, sizeof(cmd));
 }
 
-static int
-poe_reply_port_ext_config(unsigned char *reply)
+static int poe_reply_port_ext_config(struct mcu_state *state, uint8_t *reply)
 {
 	const char *mode[] = {
 		"PoE",
@@ -459,7 +448,7 @@ poe_reply_port_ext_config(unsigned char *reply)
 		"PoE+"
 	};
 
-	state.ports[reply[2]].poe_mode = GET_STR(reply[3], mode);
+	state->ports[reply[2]].poe_mode = GET_STR(reply[3], mode);
 
 	return 0;
 }
@@ -472,7 +461,7 @@ static int poe_cmd_4_port_status(uint8_t p1, uint8_t p2, uint8_t p3, uint8_t p4)
 	return poe_cmd_queue(cmd, sizeof(cmd));
 }
 
-static int poe_reply_4_port_status(uint8_t *reply)
+static int poe_reply_4_port_status(struct mcu_state *state, uint8_t *reply)
 {
 	int i, port, pstate;
 
@@ -496,7 +485,7 @@ static int poe_reply_4_port_status(uint8_t *reply)
 			return -1;
 		}
 
-		state.ports[port].status = GET_STR(pstate & 0xf, status);
+		state->ports[port].status = GET_STR(pstate & 0xf, status);
 	}
 
 	return 0;
@@ -511,12 +500,11 @@ poe_cmd_port_power_stats(unsigned char port)
 	return poe_cmd_queue(cmd, sizeof(cmd));
 }
 
-static int
-poe_reply_port_power_stats(unsigned char *reply)
+static int poe_reply_port_power_stats(struct mcu_state *state, uint8_t *reply)
 {
 	int port_idx = reply[2];
 
-	state.ports[port_idx].watt = read16_be(reply + 9) * 0.1;
+	state->ports[port_idx].watt = read16_be(reply + 9) * 0.1;
 	return 0;
 }
 
@@ -616,7 +604,7 @@ static int mcu_handle_reply(struct mcu *mcu, uint8_t *reply)
 	}
 
 	if (reply_handler[reply[0]]) {
-	  return reply_handler[reply[0]](reply);
+		return reply_handler[reply[0]](&mcu->state, reply);
 	}
 
 	return 0;
@@ -792,6 +780,7 @@ ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
 		 struct ubus_request_data *req, const char *method,
 		 struct blob_attr *msg)
 {
+	const struct mcu_state *state = &main_mcu.state;
 	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
 	const struct config *cfg = &poe->config;
 	char tmp[16];
@@ -801,12 +790,12 @@ ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	blob_buf_init(&b, 0);
 
 	snprintf(tmp, sizeof(tmp), "v%u.%u",
-		 state.sys_version, state.sys_ext_version);
+		 state->sys_version, state->sys_ext_version);
 	blobmsg_add_string(&b, "firmware", tmp);
-	if (state.sys_mcu)
-		blobmsg_add_string(&b, "mcu", state.sys_mcu);
+	if (state->sys_mcu)
+		blobmsg_add_string(&b, "mcu", state->sys_mcu);
 	blobmsg_add_double(&b, "budget", cfg->budget);
-	blobmsg_add_double(&b, "consumption", state.power_consumption);
+	blobmsg_add_double(&b, "consumption", state->power_consumption);
 
 	c = blobmsg_open_table(&b, "ports");
 	for (i = 0; i < cfg->port_count; i++) {
@@ -819,14 +808,14 @@ ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
 
 		blobmsg_add_u32(&b, "priority", cfg->ports[i].priority);
 
-		if (state.ports[i].poe_mode)
-			blobmsg_add_string(&b, "mode", state.ports[i].poe_mode);
-		if (state.ports[i].status)
-			blobmsg_add_string(&b, "status", state.ports[i].status);
+		if (state->ports[i].poe_mode)
+			blobmsg_add_string(&b, "mode", state->ports[i].poe_mode);
+		if (state->ports[i].status)
+			blobmsg_add_string(&b, "status", state->ports[i].status);
 		else
 			blobmsg_add_string(&b, "status", "unknown");
-		if (state.ports[i].watt)
-			blobmsg_add_double(&b, "consumption", state.ports[i].watt);
+		if (state->ports[i].watt)
+			blobmsg_add_double(&b, "consumption", state->ports[i].watt);
 
 		blobmsg_close_table(&b, p);
 	}
@@ -961,7 +950,7 @@ main(int argc, char ** argv)
 		},
 	};
 
-	INIT_LIST_HEAD(&state.pending_cmds);
+	INIT_LIST_HEAD(&main_mcu.pending_cmds);
 	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "realtek-poe");
 	ulog_threshold(LOG_INFO);
 
@@ -978,7 +967,7 @@ main(int argc, char ** argv)
 	uloop_init();
 	ubus_auto_connect(&poe.conn);
 
-	if (poe_stream_open("/dev/ttyS1", &state.stream, B19200) < 0)
+	if (poe_stream_open("/dev/ttyS1", &main_mcu.stream, B19200) < 0)
 		return -1;
 
 
