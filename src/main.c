@@ -36,7 +36,7 @@ struct mcu {
 
 struct cmd {
 	struct list_head list;
-	unsigned char cmd[12];
+	uint8_t cmd[12];
 	unsigned int num_retries;
 };
 
@@ -49,9 +49,7 @@ struct poe_ctx {
 
 static struct blob_buf b;
 
-static void config_apply_quirks(struct config *config);
-
-static inline struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
+static struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
 {
 	struct ubus_auto_conn *c = container_of(u, struct ubus_auto_conn, ctx);
 	return container_of(c, struct poe_ctx, conn);
@@ -108,38 +106,6 @@ static void load_global_config(struct config *cfg, struct uci_context *uci,
 		cfg->budget_guard = strtof(guardband, NULL);
 }
 
-static void config_load(struct config *cfg, int init)
-{
-	struct uci_context *uci = uci_alloc_context();
-	struct uci_package *package = NULL;
-
-	memset(cfg->ports, 0, sizeof(cfg->ports));
-
-	if (!uci_load(uci, "poe", &package)) {
-		struct uci_element *e;
-
-		if (init) {
-			uci_foreach_element(&package->sections, e) {
-				struct uci_section *s = uci_to_section(e);
-
-				if (!strcmp(s->type, "global"))
-					load_global_config(cfg, uci, s);
-			}
-
-			config_apply_quirks(cfg);
-		}
-		uci_foreach_element(&package->sections, e) {
-			struct uci_section *s = uci_to_section(e);
-
-			if (!strcmp(s->type, "port"))
-				load_port_config(cfg, uci, s);
-		}
-	}
-
-	uci_unload(uci, package);
-	uci_free_context(uci);
-}
-
 static char *get_board_compatible(void)
 {
 	char name[128];
@@ -176,6 +142,38 @@ static void config_apply_quirks(struct config *config)
 	free(compatible);
 }
 
+static void config_load(struct config *cfg, int init)
+{
+	struct uci_context *uci = uci_alloc_context();
+	struct uci_package *package = NULL;
+
+	memset(cfg->ports, 0, sizeof(cfg->ports));
+
+	if (!uci_load(uci, "poe", &package)) {
+		struct uci_element *e;
+
+		if (init) {
+			uci_foreach_element(&package->sections, e) {
+				struct uci_section *s = uci_to_section(e);
+
+				if (!strcmp(s->type, "global"))
+					load_global_config(cfg, uci, s);
+			}
+
+			config_apply_quirks(cfg);
+		}
+		uci_foreach_element(&package->sections, e) {
+			struct uci_section *s = uci_to_section(e);
+
+			if (!strcmp(s->type, "port"))
+				load_port_config(cfg, uci, s);
+		}
+	}
+
+	uci_unload(uci, package);
+	uci_free_context(uci);
+}
+
 static void log_packet(int log_level, const char *prefix, const uint8_t d[12])
 {
 	ulog(log_level,
@@ -190,7 +188,7 @@ static int mcu_cmd_send(struct mcu *mcu, struct cmd *cmd)
 		return -EBUSY;
 
 	log_packet(LOG_DEBUG, "TX ->", cmd->cmd);
-	return ustream_write(&mcu->stream.stream, (char *)cmd->cmd, 12, false);
+	return ustream_write(&mcu->stream.stream, (void *)cmd->cmd, 12, false);
 }
 
 static int mcu_cmd_next(struct mcu *mcu)
@@ -244,14 +242,14 @@ static int poet_cmd_4_port(struct mcu *mcu, uint8_t cmd_id, uint8_t port[4],
  */
 static int poe_cmd_port_enable(struct mcu *mcu, uint8_t port, uint8_t enable)
 {
-	unsigned char cmd[] = { 0x00, 0x00, port, enable };
+	uint8_t cmd[] = { 0x00, 0x00, port, enable };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
 
 static int poe_cmd_port_mapping_enable(struct mcu *mcu, bool enable)
 {
-	unsigned char cmd[] = { 0x02, 0x00, enable };
+	uint8_t cmd[] = { 0x02, 0x00, enable };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -266,7 +264,7 @@ static int poe_cmd_port_mapping_enable(struct mcu *mcu, bool enable)
 static int poe_cmd_port_detection_type(struct mcu *mcu, uint8_t port,
 				       uint8_t type)
 {
-	unsigned char cmd[] = { 0x10, 0x00, port, type };
+	uint8_t cmd[] = { 0x10, 0x00, port, type };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -290,7 +288,7 @@ static int poe_cmd_port_classification(struct mcu *mcu, uint8_t port[4],
 static int poe_cmd_port_disconnect_type(struct mcu *mcu, uint8_t port,
 					uint8_t type)
 {
-	unsigned char cmd[] = { 0x13, 0x00, port, type };
+	uint8_t cmd[] = { 0x13, 0x00, port, type };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -313,7 +311,7 @@ static int poe_cmd_port_power_limit_type(struct mcu *mcu, uint8_t port[4],
 static int poe_cmd_port_power_budget(struct mcu *mcu, uint8_t port,
 				     uint8_t budget)
 {
-	unsigned char cmd[] = { 0x16, 0x00, port, budget };
+	uint8_t cmd[] = { 0x16, 0x00, port, budget };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -327,7 +325,7 @@ static int poe_cmd_port_power_budget(struct mcu *mcu, uint8_t port,
  */
 static int poe_cmd_power_mgmt_mode(struct mcu *mcu, uint8_t mode)
 {
-	unsigned char cmd[] = { 0x17, 0x00, mode };
+	uint8_t cmd[] = { 0x17, 0x00, mode };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -371,7 +369,7 @@ static int poe_set_port_power_up_mode(struct mcu *mcu, uint8_t port[4],
 /* 0x20 - Get system info */
 static int poe_cmd_status(struct mcu *mcu)
 {
-	unsigned char cmd[] = { 0x20 };
+	uint8_t cmd[] = { 0x20 };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -415,7 +413,7 @@ static int poe_reply_status(struct mcu_state *state, uint8_t *reply)
 /* 0x23 - Get power statistics */
 static int poe_cmd_power_stats(struct mcu *mcu)
 {
-	unsigned char cmd[] = { 0x23 };
+	uint8_t cmd[] = { 0x23 };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -430,7 +428,7 @@ static int poe_reply_power_stats(struct mcu_state *state, uint8_t *reply)
 /* 0x26 - Get extended port config */
 static int poe_cmd_port_ext_config(struct mcu *mcu, uint8_t port)
 {
-	unsigned char cmd[] = { 0x26, 0x00, port };
+	uint8_t cmd[] = { 0x26, 0x00, port };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -491,7 +489,7 @@ static int poe_reply_4_port_status(struct mcu_state *state, uint8_t *reply)
 /* 0x30 - Get port power statistics */
 static int poe_cmd_port_power_stats(struct mcu *mcu, uint8_t port)
 {
-	unsigned char cmd[] = { 0x30, 0x00, port };
+	uint8_t cmd[] = { 0x30, 0x00, port };
 
 	return mcu_queue_cmd(mcu, cmd, sizeof(cmd));
 }
@@ -558,8 +556,7 @@ static void handle_f0_reply(struct mcu *mcu, struct cmd *cmd, uint8_t *reply)
 static int mcu_handle_reply(struct mcu *mcu, uint8_t *reply)
 {
 	struct cmd *cmd = NULL;
-	unsigned char sum = 0, i;
-	uint8_t cmd_id, cmd_seq;
+	uint8_t sum = 0, i, cmd_id, cmd_seq;
 
 	log_packet(LOG_DEBUG, "RX <-", reply);
 
@@ -611,7 +608,7 @@ static void poe_stream_msg_cb(struct ustream *s, int bytes)
 	struct ustream_fd *ufd = container_of(s, struct ustream_fd, stream);
 	struct mcu *mcu = container_of(ufd, struct mcu, stream);
 	int len;
-	unsigned char *reply = (unsigned char *)ustream_get_read_buf(s, &len);
+	uint8_t *reply = (uint8_t *)ustream_get_read_buf(s, &len);
 
 	if (len < 12)
 		return;
@@ -620,8 +617,7 @@ static void poe_stream_msg_cb(struct ustream *s, int bytes)
 	mcu_cmd_next(mcu);
 }
 
-static void
-poe_stream_notify_cb(struct ustream *s)
+static void poe_stream_notify_cb(struct ustream *s)
 {
 	if (!s->eof)
 		return;
@@ -630,8 +626,7 @@ poe_stream_notify_cb(struct ustream *s)
 	exit(-1);
 }
 
-static int
-poe_stream_open(char *dev, struct ustream_fd *s, speed_t speed)
+static int poe_stream_open(char *dev, struct ustream_fd *s, speed_t speed)
 {
 	int ret, tty;
 
@@ -752,8 +747,7 @@ static int poe_initial_setup(struct mcu* mcu, const struct config *cfg)
 	return 0;
 }
 
-static void
-state_timeout_cb(struct uloop_timeout *t)
+static void state_timeout_cb(struct uloop_timeout *t)
 {
 	struct poe_ctx *poe = container_of(t, struct poe_ctx, state_timeout);
 	const struct config *cfg = &poe->config;
@@ -773,10 +767,9 @@ state_timeout_cb(struct uloop_timeout *t)
 	uloop_timeout_set(t, 2 * 1000);
 }
 
-static int
-ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
-		 struct ubus_request_data *req, const char *method,
-		 struct blob_attr *msg)
+static int ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
+			    struct ubus_request_data *req, const char *method,
+			    struct blob_attr *msg)
 {
 	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
 	const struct mcu_state *state = &poe->mcu.state;
@@ -864,10 +857,9 @@ ubus_poe_sendframe_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	return mcu_queue_cmd(mcu, cmd, cmd_len);
 }
 
-static int
-ubus_poe_reload_cb(struct ubus_context *ctx, struct ubus_object *obj,
-		   struct ubus_request_data *req, const char *method,
-		   struct blob_attr *msg)
+static int ubus_poe_reload_cb(struct ubus_context *ctx, struct ubus_object *obj,
+			      struct ubus_request_data *req, const char *method,
+			      struct blob_attr *msg)
 {
 	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
 
@@ -927,8 +919,7 @@ static struct ubus_object ubus_poe_object = {
 	.n_methods = ARRAY_SIZE(ubus_poe_methods),
 };
 
-static void
-ubus_connect_handler(struct ubus_context *ctx)
+static void ubus_connect_handler(struct ubus_context *ctx)
 {
 	int ret;
 
@@ -937,8 +928,7 @@ ubus_connect_handler(struct ubus_context *ctx)
 		ULOG_ERR("Failed to add object: %s\n", ubus_strerror(ret));
 }
 
-int
-main(int argc, char ** argv)
+int main(int argc, char **argv)
 {
 	int ch;
 
