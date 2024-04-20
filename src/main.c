@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0 */
 
+#include "tek-poe.h"
+
 #include <string.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <termios.h>
@@ -19,40 +20,11 @@
 #include <uci.h>
 #include <uci_blob.h>
 
-#define ULOG_DBG(fmt, ...) ulog(LOG_DEBUG, fmt, ## __VA_ARGS__)
-
 typedef int (*poe_reply_handler)(unsigned char *reply);
 
 /* Careful with this; Only works for set_detection/disconnect_type commands. */
 #define PORT_ID_ALL	0x7f
-#define MAX_PORT	24
 #define MAX_RETRIES	5
-#define GET_STR(a, b)	((a) < ARRAY_SIZE(b) ? (b)[a] : NULL)
-#define MAX(a, b)	(((a) > (b)) ? (a) : (b))
-
-struct port_config {
-	char name[16];
-	unsigned int valid : 1;
-	unsigned int enable : 1;
-	unsigned char priority;
-	unsigned char power_up_mode;
-	unsigned char power_budget;
-};
-
-struct config {
-	float budget;
-	float budget_guard;
-
-	unsigned int port_count;
-	uint8_t pse_id_set_budget_mask;
-	struct port_config ports[MAX_PORT];
-};
-
-struct port_state {
-	const char *status;
-	float watt;
-	const char *poe_mode;
-};
 
 struct state {
 	const char *sys_mode;
@@ -84,17 +56,6 @@ static struct config config = {
 	.budget_guard = 7,
 	.pse_id_set_budget_mask = 0x01,
 };
-
-static uint16_t read16_be(uint8_t *raw)
-{
-	return (uint16_t)raw[0] << 8 | raw[1];
-}
-
-static void write16_be(uint8_t *raw, uint16_t value)
-{
-	raw[0] = value >> 8;
-	raw[1] =  value & 0xff;
-}
 
 static void load_port_config(struct uci_context *uci, struct uci_section *s)
 {
