@@ -49,6 +49,16 @@ struct config {
 	struct port_config ports[MAX_PORT];
 };
 
+struct poe_dialect {
+	int (*init_async)(const struct config *cfg);
+	int (*init_ports_async)(const struct config *cfg);
+	int (*enable_port_async)(uint8_t port, uint8_t enable);
+	int (*poll_async)(const struct config *cfg);
+	int (*handle_reply)(struct mcu_state *ctx, uint8_t *reply, size_t len);
+};
+
+int poe_cmd_queue(uint8_t *cmd, int len);
+
 static inline uint16_t read16_be(uint8_t *raw)
 {
 	return (uint16_t)raw[0] << 8 | raw[1];
@@ -59,5 +69,7 @@ static inline void write16_be(uint8_t *raw, uint16_t value)
 	raw[0] = value >> 8;
 	raw[1] =  value & 0xff;
 }
+
+extern const struct poe_dialect broadcom_dialect;
 
 #endif /* TEK_POE_H */
