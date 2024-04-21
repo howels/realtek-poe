@@ -44,7 +44,7 @@ struct poe_ctx {
 	struct uloop_timeout state_timeout;
 };
 
-static const struct poe_dialect *dialect = &broadcom_dialect;
+static const struct poe_dialect *dialect = &realtek_dialect;
 
 static struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
 {
