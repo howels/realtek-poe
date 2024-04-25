@@ -168,6 +168,18 @@ static int rtl_cmd_why_u_reset(void)
 	return poe_cmd_queue(cmd, sizeof(cmd));
 }
 
+static int rtl_cmd_port_config(uint8_t port)
+{
+	uint8_t cmd[] = { 0x48, 0x00, port };
+
+	return poe_cmd_queue(cmd, sizeof(cmd));
+}
+
+static int rtl_reply_port_config(struct mcu_state *mcu, uint8_t *reply)
+{
+	return 0;
+}
+
 static int rtl_cmd_port_ext_config(uint8_t port)
 {
 	uint8_t cmd[] = { 0x49, 0x00, port };
@@ -268,6 +280,7 @@ static poe_reply_handler reply_handler[] = {
 	[0x40] = rtl_reply_status,
 	[0x41] = rtl_reply_power_stats,
 	[0x44] = rtl_reply_port_power_stats,
+	[0x48] = rtl_reply_port_config,
 	[0x49] = rtl_reply_port_ext_config,
 	[0x50] = rtl_reply_8_port_status,
 };
@@ -401,6 +414,7 @@ static int rtl_poll(const struct config *config)
 	rtl_cmd_8_port_status();
 
 	for (i = 0; i < config->port_count; i++) {
+		rtl_cmd_port_config(i);
 		rtl_cmd_port_ext_config(i);
 		rtl_cmd_port_power_stats(i);
 	}
