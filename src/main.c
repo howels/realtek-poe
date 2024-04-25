@@ -36,7 +36,10 @@ struct mcu {
 	unsigned int num_detected_ports;
 
 	struct port_state ports[MAX_PORT];
-	struct uloop_timeout mcu_error_timeout;
+	struct uloop_timeout error_timeout;
+	struct list_head pending_cmds;
+	struct ustream_fd stream;
+	uint8_t cmd_seq;
 };
 
 struct cmd {
@@ -51,9 +54,6 @@ struct poe_ctx {
 	struct uloop_timeout state_timeout;
 };
 
-static struct ustream_fd stream;
-static LIST_HEAD(cmd_pending);
-static unsigned char cmd_seq;
 static struct mcu state;
 static struct blob_buf b;
 
@@ -192,54 +192,54 @@ static void log_packet(int log_level, const char *prefix, const uint8_t d[12])
 		     d[6], d[7], d[8], d[9], d[10], d[11]);
 }
 
-static int
-poe_cmd_send(struct cmd *cmd)
+static int mcu_cmd_send(struct mcu *mcu, struct cmd *cmd)
 {
-	if (state.mcu_error_timeout.pending)
+	if (mcu->error_timeout.pending)
 		return -EBUSY;
 
 	log_packet(LOG_DEBUG, "TX ->", cmd->cmd);
-	ustream_write(&stream.stream, (char *)cmd->cmd, 12, false);
-
-	return 0;
+	return ustream_write(&mcu->stream.stream, (char *)cmd->cmd, 12, false);
 }
 
-static int
-poe_cmd_next(void)
+static int mcu_cmd_next(struct mcu *mcu)
 {
 	struct cmd *cmd;
 
-	if (list_empty(&cmd_pending))
-		return -1;
+	if (list_empty(&mcu->pending_cmds))
+		return -EAGAIN;
 
-	cmd = list_first_entry(&cmd_pending, struct cmd, list);
+	cmd = list_first_entry(&mcu->pending_cmds, struct cmd, list);
 
-	return poe_cmd_send(cmd);
+	return mcu_cmd_send(mcu, cmd);
 }
 
-static int
-poe_cmd_queue(unsigned char *_cmd, int len)
+static int mcu_queue_cmd(struct mcu *mcu, uint8_t *cmd_buf, size_t len)
 {
-	int i, empty = list_empty(&cmd_pending);
+	int i, empty = list_empty(&mcu->pending_cmds);
 	struct cmd *cmd = malloc(sizeof(*cmd));
 
 	memset(cmd, 0, sizeof(*cmd));
 	memset(cmd->cmd, 0xff, 12);
-	memcpy(cmd->cmd, _cmd, len);
+	memcpy(cmd->cmd, cmd_buf, len);
 
-	cmd_seq++;
-	cmd->cmd[1] = cmd_seq;
+	mcu->cmd_seq++;
+	cmd->cmd[1] = mcu->cmd_seq;
 	cmd->cmd[11] = 0;
 
 	for (i = 0; i < 11; i++)
 		cmd->cmd[11] += cmd->cmd[i];
 
-	list_add_tail(&cmd->list, &cmd_pending);
+	list_add_tail(&cmd->list, &mcu->pending_cmds);
 
 	if (empty)
-		return poe_cmd_send(cmd);
+		return mcu_cmd_send(mcu, cmd);
 
 	return 0;
+}
+
+static int poe_cmd_queue(uint8_t *cmd, int len)
+{
+	return mcu_queue_cmd(&state, cmd, len);
 }
 
 static int poet_cmd_4_port(uint8_t cmd_id, uint8_t port[4], uint8_t data[4])
@@ -530,10 +530,12 @@ static poe_reply_handler reply_handler[] = {
 
 static void mcu_clear_timeout(struct uloop_timeout *t)
 {
-	poe_cmd_next();
+	struct mcu *mcu = container_of(t, struct mcu, error_timeout);
+
+	mcu_cmd_next(mcu);
 }
 
-static void handle_poe_f0_reply(struct cmd *cmd, uint8_t *reply)
+static void handle_f0_reply(struct mcu *mcu, struct cmd *cmd, uint8_t *reply)
 {
 	const char *reason;
 
@@ -553,7 +555,7 @@ static void handle_poe_f0_reply(struct cmd *cmd, uint8_t *reply)
 		log_packet(LOG_NOTICE, "\treply: ", reply);
 	}
 
-	if (!state.mcu_error_timeout.pending) {
+	if (!mcu->error_timeout.pending) {
 		if (++cmd->num_retries > MAX_RETRIES) {
 			ULOG_ERR("Aborting request (%02x) after %d attempts\n",
 				 cmd->cmd[0], cmd->num_retries);
@@ -562,15 +564,14 @@ static void handle_poe_f0_reply(struct cmd *cmd, uint8_t *reply)
 		}
 
 		/* Wait for the MCU to recover */
-		state.mcu_error_timeout.cb = mcu_clear_timeout;
-		uloop_timeout_set(&state.mcu_error_timeout, 100);
+		mcu->error_timeout.cb = mcu_clear_timeout;
+		uloop_timeout_set(&mcu->error_timeout, 100);
 	}
 
-	list_add(&cmd->list, &cmd_pending);
+	list_add(&cmd->list, &mcu->pending_cmds);
 }
 
-static int
-poe_reply_consume(unsigned char *reply)
+static int mcu_handle_reply(struct mcu *mcu, uint8_t *reply)
 {
 	struct cmd *cmd = NULL;
 	unsigned char sum = 0, i;
@@ -578,12 +579,12 @@ poe_reply_consume(unsigned char *reply)
 
 	log_packet(LOG_DEBUG, "RX <-", reply);
 
-	if (list_empty(&cmd_pending)) {
+	if (list_empty(&mcu->pending_cmds)) {
 		ULOG_ERR("received unsolicited reply\n");
 		return -1;
 	}
 
-	cmd = list_first_entry(&cmd_pending, struct cmd, list);
+	cmd = list_first_entry(&mcu->pending_cmds, struct cmd, list);
 	list_del(&cmd->list);
 	cmd_id = cmd->cmd[0];
 	cmd_seq = cmd->cmd[1];
@@ -598,7 +599,7 @@ poe_reply_consume(unsigned char *reply)
 	}
 
 	if ((reply[0] & 0xf0) == 0xf0) {
-		handle_poe_f0_reply(cmd, reply);
+		handle_f0_reply(mcu, cmd, reply);
 		return -1;
 	}
 
@@ -621,17 +622,18 @@ poe_reply_consume(unsigned char *reply)
 	return 0;
 }
 
-static void
-poe_stream_msg_cb(struct ustream *s, int bytes)
+static void poe_stream_msg_cb(struct ustream *s, int bytes)
 {
+	struct ustream_fd *ufd = container_of(s, struct ustream_fd, stream);
+	struct mcu *mcu = container_of(ufd, struct mcu, stream);
 	int len;
 	unsigned char *reply = (unsigned char *)ustream_get_read_buf(s, &len);
 
 	if (len < 12)
 		return;
-	poe_reply_consume(reply);
+	mcu_handle_reply(mcu, reply);
 	ustream_consume(s, 12);
-	poe_cmd_next();
+	mcu_cmd_next(mcu);
 }
 
 static void
@@ -959,6 +961,7 @@ main(int argc, char ** argv)
 		},
 	};
 
+	INIT_LIST_HEAD(&state.pending_cmds);
 	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "realtek-poe");
 	ulog_threshold(LOG_INFO);
 
@@ -975,7 +978,7 @@ main(int argc, char ** argv)
 	uloop_init();
 	ubus_auto_connect(&poe.conn);
 
-	if (poe_stream_open("/dev/ttyS1", &stream, B19200) < 0)
+	if (poe_stream_open("/dev/ttyS1", &state.stream, B19200) < 0)
 		return -1;
 
 
