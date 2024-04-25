@@ -26,7 +26,7 @@ typedef int (*poe_reply_handler)(unsigned char *reply);
 #define PORT_ID_ALL	0x7f
 #define MAX_RETRIES	5
 
-struct state {
+struct mcu {
 	const char *sys_mode;
 	unsigned char sys_version;
 	const char *sys_mcu;
@@ -54,7 +54,7 @@ struct poe_ctx {
 static struct ustream_fd stream;
 static LIST_HEAD(cmd_pending);
 static unsigned char cmd_seq;
-static struct state state;
+static struct mcu state;
 static struct blob_buf b;
 
 static void config_apply_quirks(struct config *config);
