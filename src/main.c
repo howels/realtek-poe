@@ -68,7 +68,8 @@ static inline struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
 	return container_of(c, struct poe_ctx, conn);
 }
 
-static void load_port_config(struct uci_context *uci, struct uci_section *s)
+static void load_port_config(struct config *cfg, struct uci_context *uci,
+			     struct uci_section *s)
 {
 	const char * name, *id_str, *enable, *priority, *poe_plus;
 	unsigned long id;
@@ -89,31 +90,33 @@ static void load_port_config(struct uci_context *uci, struct uci_section *s)
 		ULOG_ERR("invalid port id=%lu for %s", id, name);
 		return;
 	}
-	config.port_count = MAX(config.port_count, id);
+	cfg->port_count = MAX(cfg->port_count, id);
 	id--;
 
-	strncpy(config.ports[id].name, name, sizeof(config.ports[id].name));
-	config.ports[id].valid = 1;
-	config.ports[id].enable = enable ? !strcmp(enable, "1") : 0;
-	config.ports[id].priority = priority ? strtoul(priority, NULL, 0) : 0;
-	if (config.ports[id].priority > 3)
-		config.ports[id].priority = 3;
+	strncpy(cfg->ports[id].name, name, sizeof(cfg->ports[id].name));
+	cfg->ports[id].valid = 1;
+	cfg->ports[id].enable = enable ? !strcmp(enable, "1") : 0;
+	cfg->ports[id].priority = priority ? strtoul(priority, NULL, 0) : 0;
+	if (cfg->ports[id].priority > 3)
+		cfg->ports[id].priority = 3;
 
 	if (poe_plus && !strcmp(poe_plus, "1"))
-		config.ports[id].power_up_mode = 3;
+		cfg->ports[id].power_up_mode = 3;
 }
 
-static void load_global_config(struct uci_context *uci, struct uci_section *s)
+static void load_global_config(struct config *cfg, struct uci_context *uci,
+			       struct uci_section *s)
+
 {
 	const char *budget, *guardband;
 
 	budget = uci_lookup_option_string(uci, s, "budget");
 	guardband = uci_lookup_option_string(uci, s, "guard");
 
-	config.budget = budget ? strtof(budget, NULL) : 31.0;
-	config.budget_guard = config.budget / 10;
+	cfg->budget = budget ? strtof(budget, NULL) : 31.0;
+	cfg->budget_guard = cfg->budget / 10;
 	if (guardband)
-		config.budget_guard = strtof(guardband, NULL);
+		cfg->budget_guard = strtof(guardband, NULL);
 }
 
 static void
@@ -132,13 +135,13 @@ config_load(int init)
 				struct uci_section *s = uci_to_section(e);
 
 				if (!strcmp(s->type, "global"))
-					load_global_config(uci, s);
+					load_global_config(&config, uci, s);
 			}
 		uci_foreach_element(&package->sections, e) {
 			struct uci_section *s = uci_to_section(e);
 
 			if (!strcmp(s->type, "port"))
-				load_port_config(uci, s);
+				load_port_config(&config, uci, s);
 		}
 	}
 
