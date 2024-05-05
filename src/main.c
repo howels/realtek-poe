@@ -44,10 +44,9 @@ struct poe_ctx {
 	struct mcu mcu;
 	struct config config;
 	struct ubus_auto_conn conn;
+	struct blob_buf blob_buf;
 	struct uloop_timeout state_timeout;
 };
-
-static struct blob_buf b;
 
 static struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
 {
@@ -774,45 +773,46 @@ static int ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
 	struct poe_ctx *poe = ubus_to_poe_ctx(ctx);
 	const struct mcu_state *state = &poe->mcu.state;
 	const struct config *cfg = &poe->config;
+	struct blob_buf *b = &poe->blob_buf;
 	char tmp[16];
 	size_t i;
 	void *c;
 
-	blob_buf_init(&b, 0);
+	blob_buf_init(b, 0);
 
 	snprintf(tmp, sizeof(tmp), "v%u.%u",
 		 state->sys_version, state->sys_ext_version);
-	blobmsg_add_string(&b, "firmware", tmp);
+	blobmsg_add_string(b, "firmware", tmp);
 	if (state->sys_mcu)
-		blobmsg_add_string(&b, "mcu", state->sys_mcu);
-	blobmsg_add_double(&b, "budget", cfg->budget);
-	blobmsg_add_double(&b, "consumption", state->power_consumption);
+		blobmsg_add_string(b, "mcu", state->sys_mcu);
+	blobmsg_add_double(b, "budget", cfg->budget);
+	blobmsg_add_double(b, "consumption", state->power_consumption);
 
-	c = blobmsg_open_table(&b, "ports");
+	c = blobmsg_open_table(b, "ports");
 	for (i = 0; i < cfg->port_count; i++) {
 		void *p;
 
 		if (!cfg->ports[i].valid)
 			continue;
 
-		p = blobmsg_open_table(&b, cfg->ports[i].name);
+		p = blobmsg_open_table(b, cfg->ports[i].name);
 
-		blobmsg_add_u32(&b, "priority", cfg->ports[i].priority);
+		blobmsg_add_u32(b, "priority", cfg->ports[i].priority);
 
 		if (state->ports[i].poe_mode)
-			blobmsg_add_string(&b, "mode", state->ports[i].poe_mode);
+			blobmsg_add_string(b, "mode", state->ports[i].poe_mode);
 		if (state->ports[i].status)
-			blobmsg_add_string(&b, "status", state->ports[i].status);
+			blobmsg_add_string(b, "status", state->ports[i].status);
 		else
-			blobmsg_add_string(&b, "status", "unknown");
+			blobmsg_add_string(b, "status", "unknown");
 		if (state->ports[i].watt)
-			blobmsg_add_double(&b, "consumption", state->ports[i].watt);
+			blobmsg_add_double(b, "consumption", state->ports[i].watt);
 
-		blobmsg_close_table(&b, p);
+		blobmsg_close_table(b, p);
 	}
-	blobmsg_close_table(&b, c);
+	blobmsg_close_table(b, c);
 
-	ubus_send_reply(ctx, req, b.head);
+	ubus_send_reply(ctx, req, b->head);
 
 	return UBUS_STATUS_OK;
 }
