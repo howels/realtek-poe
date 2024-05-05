@@ -45,6 +45,11 @@ struct cmd {
 	unsigned int num_retries;
 };
 
+struct poe_ctx {
+	struct ubus_auto_conn conn;
+	struct uloop_timeout state_timeout;
+};
+
 static struct ustream_fd stream;
 static LIST_HEAD(cmd_pending);
 static unsigned char cmd_seq;
@@ -56,6 +61,12 @@ static struct config config = {
 	.budget_guard = 7,
 	.pse_id_set_budget_mask = 0x01,
 };
+
+static inline struct poe_ctx *ubus_to_poe_ctx(struct ubus_context *u)
+{
+	struct ubus_auto_conn *c = container_of(u, struct ubus_auto_conn, ctx);
+	return container_of(c, struct poe_ctx, conn);
+}
 
 static void load_port_config(struct uci_context *uci, struct uci_section *s)
 {
@@ -930,12 +941,9 @@ main(int argc, char ** argv)
 {
 	int ch;
 
-	struct uloop_timeout state_timeout = {
-		.cb = state_timeout_cb,
-	};
-
-	struct ubus_auto_conn conn = {
-		.cb = ubus_connect_handler,
+	struct poe_ctx poe = {
+		.state_timeout.cb = state_timeout_cb,
+		.conn.cb = ubus_connect_handler,
 	};
 
 	ulog_open(ULOG_STDIO | ULOG_SYSLOG, LOG_DAEMON, "realtek-poe");
@@ -953,14 +961,14 @@ main(int argc, char ** argv)
 	config_apply_quirks(&config);
 
 	uloop_init();
-	ubus_auto_connect(&conn);
+	ubus_auto_connect(&poe.conn);
 
 	if (poe_stream_open("/dev/ttyS1", &stream, B19200) < 0)
 		return -1;
 
 
 	poe_initial_setup();
-	uloop_timeout_set(&state_timeout, 1000);
+	uloop_timeout_set(&poe.state_timeout, 1000);
 	uloop_run();
 	uloop_done();
 
