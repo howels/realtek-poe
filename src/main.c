@@ -25,7 +25,7 @@ typedef int (*poe_reply_handler)(unsigned char *reply);
 
 /* Careful with this; Only works for set_detection/disconnect_type commands. */
 #define PORT_ID_ALL	0x7f
-#define MAX_PORT	24
+#define MAX_PORT	48
 #define MAX_RETRIES	5
 #define GET_STR(a, b)	((a) < ARRAY_SIZE(b) ? (b)[a] : NULL)
 #define MAX(a, b)	(((a) > (b)) ? (a) : (b))
