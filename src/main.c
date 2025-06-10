@@ -647,7 +647,7 @@ static void handle_f0_reply(struct mcu *mcu, struct cmd *cmd, uint8_t *reply)
 
 		/* Wait for the MCU to recover */
 		mcu->error_timeout.cb = mcu_clear_timeout;
-		uloop_timeout_set(&mcu->error_timeout, 100);
+		uloop_timeout_set(&mcu->error_timeout, 200);
 	}
 
 	list_add(&cmd->list, &mcu->pending_cmds);
@@ -871,7 +871,7 @@ static void state_timeout_cb(struct uloop_timeout *t)
 		poe_cmd_port_power_stats(mcu, i);
 	}
 
-	uloop_timeout_set(t, 2 * 1000);
+	uloop_timeout_set(t, 10 * 1000);
 }
 
 static int ubus_poe_info_cb(struct ubus_context *ctx, struct ubus_object *obj,
