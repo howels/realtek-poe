@@ -793,10 +793,29 @@ poe_initial_setup(void)
 	return 0;
 }
 
+static int list_size(const struct list_head *head) {
+    int count = 0;
+    struct list_head *list;
+
+    list_for_each(list, head)
+        count++;
+
+    return count;
+}
+
 static void
 state_timeout_cb(struct uloop_timeout *t)
 {
 	size_t i;
+
+    i = list_size(&cmd_pending);
+    if(i > 0) {
+        ULOG_ERR("Deferring poll, PoE queue size is %d\n", i);
+        uloop_timeout_set(t, 2 * 1000);
+        return;
+    } else {
+        ULOG_ERR("PoE queue is empty, polling\n");
+    }
 
 	poe_cmd_power_stats();
 
